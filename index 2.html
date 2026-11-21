@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>物件 G 擺放位置抽籤</title>
+<style>
+  body { font-family: "Noto Serif TC", "PMingLiU", serif; margin: 0; padding: 24px; background: #fff; color: #111; }
+  h1 { text-align: center; font-weight: normal; letter-spacing: 6px; margin: 0 0 12px; }
+  #instruction { text-align: center; font-size: 18px; margin-bottom: 16px; min-height: 28px; }
+  #instruction b { font-weight: bold; }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  canvas { width: 100%; height: auto; display: block; background: #ccc; }
+  .controls { display: flex; align-items: center; justify-content: center; gap: 24px; margin: 16px 0; }
+  #result { font-size: 24px; }
+  #result b { font-size: 28px; }
+  button { font-size: 18px; padding: 10px 28px; cursor: pointer; border: 2px solid #000; background: #fff; border-radius: 6px; }
+  button:hover { background: #eee; }
+  button:disabled { opacity: .5; cursor: default; }
+  #history { margin-top: 12px; font-size: 15px; }
+  #history li { margin: 2px 0; }
+  .cfg { font-size: 14px; color: #555; text-align: center; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>物件 G 擺放位置</h1>
+  <canvas id="board" width="1300" height="900"></canvas>
+  <div class="controls">
+    <button id="drawBtn">抽取</button>
+    <span id="result"></span>
+  </div>
+</div>
+
+<script>
+// ===== 可調整參數 =====
+const X_MAX = 22;          // X 抽取範圍 0 ~ 22
+const Y_MAX = 14;          // Y 抽取範圍 0 ~ 14
+const BOARD_W = 26;        // 板子格數 (X)
+const BOARD_H = 18;        // 板子格數 (Y)
+const OBJ_SIZE = 3.5;      // 物件 G 邊長（以格為單位，依實物調整）
+const DIRS = ["+X", "-X", "+Y", "-Y"];
+// ======================
+
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+const PAD_L = 60, PAD_R = 60, PAD_T = 110, PAD_B = 150;
+const cell = Math.min(
+  (canvas.width - PAD_L - PAD_R) / BOARD_W,
+  (canvas.height - PAD_T - PAD_B) / BOARD_H
+);
+const ox = PAD_L + ((canvas.width - PAD_L - PAD_R) - cell * BOARD_W) / 2; // 原點像素 x
+const oy = canvas.height - PAD_B;                                          // 原點像素 y
+const px = x => ox + x * cell;
+const py = y => oy - y * cell;
+
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+function drawBoard() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ccc"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#fff"; ctx.fillRect(px(0), py(BOARD_H), cell * BOARD_W, cell * BOARD_H);
+  ctx.strokeStyle = "#555"; ctx.lineWidth = 1;
+  for (let i = 0; i <= BOARD_W; i++) { ctx.beginPath(); ctx.moveTo(px(i), py(0)); ctx.lineTo(px(i), py(BOARD_H)); ctx.stroke(); }
+  for (let j = 0; j <= BOARD_H; j++) { ctx.beginPath(); ctx.moveTo(px(0), py(j)); ctx.lineTo(px(BOARD_W), py(j)); ctx.stroke(); }
+  ctx.fillStyle = "#000"; ctx.font = "13px sans-serif";
+  ctx.textAlign = "center";
+  for (let i = 0; i <= BOARD_W; i++) ctx.fillText(i, px(i), py(0) + 18);
+  ctx.textAlign = "right";
+  for (let j = 0; j <= BOARD_H; j++) ctx.fillText(j, px(0) - 8, py(j) + 4);
+  ctx.font = "bold 22px sans-serif"; ctx.textAlign = "center";
+  ctx.fillText("+Y", ox + cell * BOARD_W / 2, 28);
+  ctx.fillText("-Y", ox + cell * BOARD_W / 2, canvas.height - 16);
+  ctx.textAlign = "left";  ctx.fillText("+X", px(BOARD_W) + 8, py(BOARD_H / 2));
+  ctx.textAlign = "right"; ctx.fillText("-X", px(0) - 28, py(BOARD_H / 2));
+}
+
+function arrow(x1, y1, x2, y2, color) {
+  ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  const a = Math.atan2(y2 - y1, x2 - x1), h = 12;
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - h * Math.cos(a - 0.4), y2 - h * Math.sin(a - 0.4));
+  ctx.lineTo(x2 - h * Math.cos(a + 0.4), y2 - h * Math.sin(a + 0.4));
+  ctx.closePath(); ctx.fill();
+}
+
+function measureBox(text, font) {
+  ctx.font = font;
+  return { w: ctx.measureText(text).width + 28, h: 46 };
+}
+function placeBox(w, h, cx, cy) {
+  const m = 6;
+  cx = Math.min(Math.max(cx, m + w / 2), canvas.width - m - w / 2);
+  cy = Math.min(Math.max(cy, 50 + h / 2), canvas.height - 50 - h / 2);
+  return { x: cx - w / 2, y: cy - h / 2, w, h };
+}
+function overlap(a, b, pad) {
+  return a.x < b.x + b.w + pad && a.x + a.w + pad > b.x && a.y < b.y + b.h + pad && a.y + a.h + pad > b.y;
+}
+function clip(r, tx, ty) {          // 從方框中心朝目標點，取與方框邊界的交點
+  const cx = r.x + r.w / 2, cy = r.y + r.h / 2, dx = tx - cx, dy = ty - cy;
+  const t = Math.min(dx ? (r.w / 2) / Math.abs(dx) : Infinity, dy ? (r.h / 2) / Math.abs(dy) : Infinity);
+  return [cx + dx * t, cy + dy * t];
+}
+function drawBox(r, text, font) {
+  ctx.fillStyle = "#fff"; ctx.strokeStyle = "#000"; ctx.lineWidth = 3;
+  ctx.fillRect(r.x, r.y, r.w, r.h); ctx.strokeRect(r.x, r.y, r.w, r.h);
+  ctx.fillStyle = "#000"; ctx.font = font; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(text, r.x + r.w / 2, r.y + r.h / 2 + 1);
+  ctx.textBaseline = "alphabetic";
+}
+
+function drawObject(x, y, dir) {
+  const FONT = "bold 24px sans-serif";
+  // 物件：左下角（最靠近原點的角點）在 (x, y)
+  const obj = { x: px(x), y: py(y + OBJ_SIZE), w: cell * OBJ_SIZE, h: cell * OBJ_SIZE };
+  ctx.fillStyle = "#1a1aff"; ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+  const corner = [px(x), py(y)];
+
+  // 深孔位置：方框 + 箭頭指向深孔面
+  const v = { "+X": [1, 0], "-X": [-1, 0], "+Y": [0, -1], "-Y": [0, 1] }[dir];
+  const F = [obj.x + obj.w / 2 + v[0] * obj.w / 2, obj.y + obj.h / 2 + v[1] * obj.h / 2];
+  const holeText = "深孔", hs = measureBox(holeText, FONT);
+  const gap = cell * 2.2;
+  const hr = placeBox(hs.w, hs.h,
+    F[0] + v[0] * (gap + hs.w / 2), F[1] + v[1] * (gap + hs.h / 2));
+  const hs0 = clip(hr, F[0], F[1]);
+  const holeArrow = { x: Math.min(hs0[0], F[0]), y: Math.min(hs0[1], F[1]),
+                      w: Math.abs(hs0[0] - F[0]), h: Math.abs(hs0[1] - F[1]) };
+
+  // 基準角點：方框 + 箭頭指向物件角點（自動避開物件與深孔標示）
+  const cText = `基準角點 (${x}, ${y})`, cs = measureBox(cText, FONT);
+  let cr = null, best = Infinity;
+  const inRect = (r, px_, py_, pad) => px_ > r.x - pad && px_ < r.x + r.w + pad && py_ > r.y - pad && py_ < r.y + r.h + pad;
+  for (let oy2 = -260; oy2 <= 260; oy2 += 10) {
+    for (let ox2 = -420; ox2 <= 420; ox2 += 10) {
+      const cx2 = corner[0] + ox2, cy2 = corner[1] + oy2;
+      if (!(cx2 < corner[0] || cy2 > corner[1])) continue;        // 只放在角點的左側或下方
+      const r = placeBox(cs.w, cs.h, cx2, cy2);
+      if (overlap(r, obj, 10) || overlap(r, hr, 14) || overlap(r, holeArrow, 10)) continue;
+      const e = clip(r, corner[0], corner[1]);
+      const len2 = Math.hypot(e[0] - corner[0], e[1] - corner[1]);
+      if (len2 < 55) continue;                                      // 箭頭至少要看得見
+      let hit = false;
+      for (let i = 0; i <= 24 && !hit; i++) {                       // 箭頭不可穿過物件或深孔標示
+        const t = i / 24, qx = e[0] + (corner[0] - e[0]) * t, qy = e[1] + (corner[1] - e[1]) * t;
+        if ((i < 24 && inRect(obj, qx, qy, 2)) || inRect(hr, qx, qy, 6) || inRect(holeArrow, qx, qy, 6)) hit = true;
+      }
+      if (hit) continue;
+      const score = len2 + (oy2 > 0 && ox2 < 0 ? 0 : 40);          // 偏好左下方
+      if (score < best) { best = score; cr = r; }
+    }
+  }
+  if (!cr) cr = placeBox(cs.w, cs.h, corner[0] - cs.w / 2 - 40, corner[1] + 80);
+  const cs0 = clip(cr, corner[0], corner[1]);
+
+  arrow(hs0[0], hs0[1], F[0], F[1], "red");
+  arrow(cs0[0], cs0[1], corner[0], corner[1], "red");
+  drawBox(hr, holeText, FONT);
+  drawBox(cr, cText, FONT);
+  ctx.fillStyle = "red";
+  ctx.beginPath(); ctx.arc(corner[0], corner[1], 5, 0, Math.PI * 2); ctx.fill();
+}
+
+const ANIM_MS = 2000;      // 動畫時間（毫秒）
+let running = false;
+
+function show(x, y, dir, final) {
+  drawBoard(); drawObject(x, y, dir);
+  document.getElementById("result").innerHTML =
+    `座標 <b>(${x}, ${y})</b>　深孔朝向 <b>${dir}</b>`;
+  document.getElementById("result").style.opacity = final ? 1 : 0.45;
+}
+
+function draw() {
+  if (running) return;
+  running = true;
+  const btn = document.getElementById("drawBtn");
+  btn.disabled = true;
+  const fx = randInt(0, X_MAX), fy = randInt(0, Y_MAX), fdir = DIRS[randInt(0, 3)];  // 最終結果
+  const start = performance.now();
+  let last = 0, gap = 50;
+  function tick(now) {
+    const t = now - start;
+    if (t >= ANIM_MS) {
+      show(fx, fy, fdir, true);
+      btn.disabled = false; running = false;
+      return;
+    }
+    if (now - last >= gap) {               // 越接近結束，換得越慢
+      last = now;
+      gap = 50 + 200 * Math.pow(t / ANIM_MS, 3);
+      show(randInt(0, X_MAX), randInt(0, Y_MAX), DIRS[randInt(0, 3)], false);
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+drawBoard();
+document.getElementById("drawBtn").addEventListener("click", draw);
+</script>
+</body>
+</html>
